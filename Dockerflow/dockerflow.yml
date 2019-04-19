@@ -1,0 +1,121 @@
+# Dockerflow proxy on ports 80 & 443, with automated SSL Certificates
+
+version: "3.7"
+
+services:
+
+  ## Proxy (Node) ##
+  proxy:
+    image: dockerflow/docker-flow-proxy
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - proxy
+    environment:
+      LISTENER_ADDRESS: "swarm-listener"
+      MODE: "swarm"
+      RECONFIGURE_ATTEMPTS: 5
+      TIMEOUT_SERVER: 2000
+      TIMEOUT_CLIENT: 2000
+    deploy:
+      mode: global
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: any
+        delay: 10s
+        #max_attempts: 10
+        window: 60s
+      placement:
+        constraints: 
+          - node.role == worker
+
+
+
+  ## Swarm Listener (Master) ##
+  swarm-listener:
+    image: dockerflow/docker-flow-swarm-listener
+    networks:
+      - proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DF_NOTIFY_CREATE_SERVICE_URL: "http://proxy:8080/v1/docker-flow-proxy/reconfigure"
+      DF_NOTIFY_REMOVE_SERVICE_URL: "http://proxy:8080/v1/docker-flow-proxy/remove"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+        #max_attempts: 10
+        window: 60s
+      placement:
+        constraints: 
+          - node.role == manager
+
+
+  ## Let's Encrypt Companion ##
+  letsencrypt-companion:
+    image: hamburml/docker-flow-letsencrypt:latest
+    networks:
+      - proxy
+    environment:
+      - CERTBOT_EMAIL=                                      # Your Email
+      - PROXY_ADDRESS=proxy
+      - CERTBOT_CRON_RENEW=('0 3 * * *' '0 15 * * *')       # CertBot Renew Cron
+    volumes:
+          - s3_certs:/etc/letsencrypt
+    deploy:
+      restart_policy:
+        condition: any
+        delay: 10s
+        max_attempts: 5
+        window: 60s
+      labels:
+        - com.df.servicePath=/.well-known/acme-challenge
+        - com.df.notify=true
+        - com.df.distribute=true
+        - com.df.port=80
+      placement:
+        constraints: 
+          - node.role == manager
+      replicas: 1
+      
+
+  ## S3 Bucket Manager ##
+  s3-certs:
+    image: elementar/s3-volume
+    environment:
+      - BACKUP_INTERVAL=5m                                  # File Backup Interval
+      - AWS_ACCESS_KEY_ID=                                  # S3 Access Key
+      - AWS_SECRET_ACCESS_KEY=                              # S3 Secret
+      - ENDPOINT_URL=                                       # S3 Endpoint Url
+    command: /data s3://certs/ 
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+        #max_attempts: 10
+        window: 60s      
+      placement:
+        constraints: 
+          - node.role == manager  
+    volumes:
+      - s3_certs:/data
+      - /home/user/watch:/watch                             # Watch File Must be included in elementar's version
+     
+     
+     
+##  Storage ##   
+volumes:
+  s3_certs:
+    driver: local
+
+
+## Networks ##
+networks:
+  proxy:
+    external: true
